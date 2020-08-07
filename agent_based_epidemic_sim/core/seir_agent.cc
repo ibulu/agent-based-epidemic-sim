@@ -159,61 +159,50 @@ void SEIRAgent::UpdateContactReports(
     if (contact == contact_set_.end()) continue;
     risk_score_->AddExposureNotification(**contact, contact_report.test_result);
   }
-  MaybeTest(risk_score_->GetTestPolicy(timestep), &test_result_);
-  risk_score_->AddTestResult(test_result_);
-
-  // TODO: Cache already-sent internal report to avoid resending
-  // identical report.
-  SendContactReports(risk_score_->GetContactTracingPolicy(), contact_reports,
-                     broker);
-}
-
-void SEIRAgent::MaybeTest(const RiskScore::TestPolicy& test_policy,
-                          TestResult* test_result) {
-  if (!test_policy.should_test) {
-    return;
-  }
-  test_result->needs_retry = false;
-  test_result->time_requested = test_policy.time_requested;
-  if (next_health_transition_.time < test_result->time_requested) {
-    // Too early to test, must retry at a later time.
-    test_result->needs_retry = true;
-    return;
-  }
-  test_result->time_received =
-      test_result->time_requested + test_policy.latency;
-  // TODO: Sample from calibrated Bernoulli for test
-  // sensitivity/specificity.
-  for (auto transition = health_transitions_.rbegin();
-       transition != health_transitions_.rend(); ++transition) {
-    test_result->probability =
-        transition->health_state == HealthState::SUSCEPTIBLE ? 0 : 1;
-    if (transition->time < test_policy.time_requested) {
-      break;
-    }
-  }
+  SendContactReports(timestep, contact_reports, broker);
 }
 
 void SEIRAgent::SendContactReports(
-    const RiskScore::ContactTracingPolicy& contact_tracing_policy,
-    absl::Span<const ContactReport> received_reports,
-    Broker<ContactReport>* broker) const {
+    const Timestep& timestep, absl::Span<const ContactReport> received_reports,
+    Broker<ContactReport>* broker) {
+  const RiskScore::ContactTracingPolicy& contact_tracing_policy =
+      risk_score_->GetContactTracingPolicy(timestep);
   if (contact_tracing_policy.report_recursively) {
     LOG(DFATAL) << "Recursive contact tracing not yet supported.";
   }
-  // TODO: only send contact reports if test was received before the
-  // end of the current day.
-  if (contact_tracing_policy.send_positive_test &&
-      test_result_.probability == 1) {
-    std::vector<ContactReport> contact_reports;
-    contact_reports.reserve(contacts_.size());
-    for (const Contact& contact : contacts_) {
-      contact_reports.push_back({.from_agent_uuid = uuid(),
-                                 .to_agent_uuid = contact.other_uuid,
-                                 .test_result = test_result_});
-    }
-    broker->Send(contact_reports);
+  if (!contact_tracing_policy.send_report) return;
+
+  const TestResult test_result = risk_score_->GetTestResult(timestep);
+  if (test_result != last_test_result_sent_) {
+    // We want to avoid re-sending ContactReports for contacts we've already
+    // sent a ContactReport for.  We keep track of
+    // last_contact_report_considered_ which tells us the last contact we sent
+    // last_test_result_sent_ for.  If we get a new test result, though, we
+    // need to send that even for contacts we sent the previous result for.
+    // For that reason we reset last_contact_report_consiered_ to an invalid
+    // value here so we send the new test result to all our contacts.
+    last_contact_report_considered_ = {
+        .exposure = {.start_time = absl::InfinitePast()}};
   }
+
+  // TODO: Consider keeping a set of the contact uuids we've already sent
+  // to and don't send two messages to the same contact in one day. That would
+  // not eliminate all duplicate messages. If we send a ContactReport to agent A
+  // at T=0, we may send them another message if we contact them again at T=1.
+  // Hopefully agents with positive tests will isolate and not have too many
+  // daily contacts after they get notifiable test result.
+  std::vector<ContactReport> contact_reports;
+  for (auto contact = contacts_.rbegin();
+       contact != contacts_.rend() &&
+       *contact != last_contact_report_considered_;
+       ++contact) {
+    contact_reports.push_back({.from_agent_uuid = uuid(),
+                               .to_agent_uuid = contact->other_uuid,
+                               .test_result = test_result});
+  }
+  last_contact_report_considered_ = *contacts_.rend();
+
+  broker->Send(contact_reports);
 }
 
 absl::Duration SEIRAgent::DurationSinceFirstInfection(
