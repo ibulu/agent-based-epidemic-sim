@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "agent_based_epidemic_sim/applications/contact_tracing/risk_score.h"
+#include "agent_based_epidemic_sim/applications/risk_learning/risk_score.h"
 
 #include <vector>
 
 #include "absl/time/time.h"
-#include "agent_based_epidemic_sim/applications/contact_tracing/config.pb.h"
 #include "agent_based_epidemic_sim/applications/home_work/location_type.h"
+#include "agent_based_epidemic_sim/applications/risk_learning/config.pb.h"
 #include "agent_based_epidemic_sim/core/parse_text_proto.h"
 #include "agent_based_epidemic_sim/core/risk_score.h"
 #include "agent_based_epidemic_sim/core/timestep.h"
